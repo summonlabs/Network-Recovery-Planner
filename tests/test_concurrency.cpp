@@ -292,3 +292,28 @@ NRP_TEST(concurrency, socket_move_and_close_semantics) {
   const Result<transport::Socket> socket = transport::Socket::connect("127.0.0.1", 1);
   NRP_CHECK(!socket.ok());  // nothing listens on port 1
 }
+
+NRP_TEST(concurrency, a_second_server_cannot_take_a_listening_port) {
+  ServiceConfig config;
+  config.worker_threads = 1;
+  config.persist = false;
+  const Result<std::shared_ptr<PlannerService>> service = PlannerService::start(config, "");
+  NRP_REQUIRE(service.ok());
+  ServerConfig server_config;
+  server_config.port = 0;
+  const Result<std::unique_ptr<PlanningServer>> first =
+      PlanningServer::start(service.value(), server_config);
+  NRP_REQUIRE(first.ok());
+  ServerConfig taken = server_config;
+  taken.port = first.value()->port();
+  const Result<std::unique_ptr<PlanningServer>> second =
+      PlanningServer::start(service.value(), taken);
+  // Two planners must never share one listening port: the second start fails.
+  const bool second_started = second.ok();
+  if (second_started) {
+    (void)second.value()->shutdown();
+  }
+  NRP_CHECK(first.value()->shutdown().ok());
+  NRP_CHECK(service.value()->shutdown().ok());
+  NRP_CHECK(!second_started);
+}

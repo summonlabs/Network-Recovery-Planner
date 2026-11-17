@@ -54,7 +54,10 @@ function(nrp_apply_warnings target)
   endif()
   if(NRP_ASAN)
     if(MSVC)
-      target_compile_options(${target} PRIVATE /fsanitize=address)
+      # Debug information is required: without it MSVC warns C5072 in every
+      # sanitized source.
+      target_compile_options(${target} PRIVATE /fsanitize=address /Zi)
+      target_link_options(${target} PRIVATE /INCREMENTAL:NO /DEBUG)
       target_compile_definitions(${target} PRIVATE NRP_ASAN_ENABLED=1)
     else()
       target_compile_options(${target} PRIVATE -fsanitize=address -fno-omit-frame-pointer)

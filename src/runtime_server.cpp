@@ -403,8 +403,15 @@ Result<std::unique_ptr<PlanningServer>> PlanningServer::start(
   }
   impl.listener = std::move(transport::Socket::adopt(static_cast<std::uintptr_t>(handle)).value());
   int reuse = 1;
+#ifdef _WIN32
+  // SO_REUSEADDR on Windows lets a second socket bind a port that is still
+  // listening; exclusive use makes that second bind fail instead.
+  (void)::setsockopt(handle, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&reuse),
+                     sizeof(reuse));
+#else
   (void)::setsockopt(handle, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse),
                      sizeof(reuse));
+#endif
   sockaddr_in address{};
   address.sin_family = AF_INET;
   address.sin_port = htons(config.port);

@@ -580,10 +580,27 @@ Status DurableStore::commit_snapshot() {
   }
   std::error_code ec;
 #ifdef _WIN32
-  if (!MoveFileExA(temporary.c_str(), snapshot_path_.c_str(),
-                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-    std::filesystem::remove(temporary, ec);
-    return Status::error(StatusCode::IO_ERROR, "transactional snapshot replacement failed");
+  // While a reader has the snapshot open (an inspection, an antivirus or
+  // indexing scan) the replacement fails until the reader closes the file, so
+  // it is retried for a bounded time (about 2 s) instead of failing the write.
+  // A directory in the way is not transient and fails at once.
+  for (int attempt = 0;; ++attempt) {
+    if (MoveFileExA(temporary.c_str(), snapshot_path_.c_str(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+      break;
+    }
+    const DWORD code = GetLastError();
+    const DWORD attributes = GetFileAttributesA(snapshot_path_.c_str());
+    const bool directory =
+        attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    const bool transient = (code == ERROR_ACCESS_DENIED || code == ERROR_SHARING_VIOLATION ||
+                            code == ERROR_LOCK_VIOLATION) &&
+                           !directory;
+    if (!transient || attempt >= 100) {
+      std::filesystem::remove(temporary, ec);
+      return Status::error(StatusCode::IO_ERROR, "transactional snapshot replacement failed");
+    }
+    Sleep(20);
   }
 #else
   if (std::rename(temporary.c_str(), snapshot_path_.c_str()) != 0) {

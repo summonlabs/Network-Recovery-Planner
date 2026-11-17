@@ -1,10 +1,12 @@
 // Network Recovery Planner - adversarial persistence tests.
 // Copyright 2026 Summon Software Labs. Apache License 2.0.
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "detail/crc32.hpp"
@@ -375,4 +377,34 @@ NRP_TEST(persistence, plan_records_round_trip_and_reject_tampering) {
   std::vector<std::uint8_t> extended = encoded;
   extended.push_back(0);
   NRP_CHECK(!decode_plan_record(extended).ok());
+}
+
+NRP_TEST(persistence, a_snapshot_waits_for_a_reader_to_close) {
+  const std::string path = temp_path("snapshot-reader");
+  remove_store(path);
+  bool reader_opened = false;
+  bool committed = false;
+  {
+    const Result<std::unique_ptr<DurableStore>> store = DurableStore::open(path, OpenOptions{});
+    NRP_REQUIRE(store.ok());
+    Sequence sequence{};
+    NRP_CHECK(store.value()->append(RecordType::DEFINITION, payload_for(1), &sequence).ok());
+    NRP_CHECK(store.value()->commit_snapshot().ok());
+    NRP_CHECK(store.value()->append(RecordType::DEFINITION, payload_for(2), &sequence).ok());
+    {
+      // Another tool reading the store (an inspection, a scan) holds the
+      // snapshot open while it is replaced, and closes it shortly after.
+      std::ifstream reader(path + ".snapshot", std::ios::binary);
+      reader_opened = reader.is_open();
+      DurableStore* const raw = store.value().get();
+      std::thread writer([raw, &committed] { committed = raw->commit_snapshot().ok(); });
+      std::this_thread::sleep_for(std::chrono::milliseconds(300));
+      reader.close();
+      writer.join();
+    }
+  }
+  remove_store(path);
+  NRP_CHECK(reader_opened);
+  // The replacement waits for the reader instead of failing the snapshot.
+  NRP_CHECK(committed);
 }
